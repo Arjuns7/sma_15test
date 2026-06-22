@@ -1,0 +1,16 @@
+{
+  "name": "sma-trading-bot",
+  "version": "1.0.0",
+  "description": "SMA/EMA crossover trading bot for Hyperliquid",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "ccxt": "^4.4.0",
+    "dotenv": "^16.4.0"
+  }
+}
