@@ -121,6 +121,21 @@ function calcSMA(values, period) {
   return out;
 }
 
+// ─── DISCORD NOTIFICATION ────────────────────────────────────────────
+async function sendDiscordNotification(message) {
+  const webhookUrl = (process.env.DISCORD_WEBHOOK_URL || '').trim();
+  if (!webhookUrl) return;
+  try {
+    await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: message })
+    });
+  } catch (e) {
+    console.error(`⚠️ Discord notification failed: ${e.message}`);
+  }
+}
+
 // ─── BOT STATE ───────────────────────────────────────────────────────
 let position = null;
 let dailyPnL = 0;
@@ -480,6 +495,7 @@ async function openPosition(side, price) {
     tradeCount++;
     console.log(`✅ Order filled: ${order.id}`);
     console.log(`   Trade #${tradeCount}`);
+    sendDiscordNotification(`🟢 **[SMABot] OPENED ${side}**\n• Price: $${price.toFixed(2)}\n• Size: ${size.toFixed(6)} BTC\n• Notional Value: $${positionValue.toFixed(2)} USDC`);
 
     // Place on-chain stop-loss order on Hyperliquid
     try {
@@ -536,6 +552,7 @@ async function closePosition(reason) {
     dailyPnL += pnl;
     console.log(`   PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} | Daily: $${dailyPnL.toFixed(2)}`);
     console.log(`✅ Position closed: ${order.id}\n`);
+    sendDiscordNotification(`🔴 **[SMABot] CLOSED ${position.side}**\n• Exit Price: $${price.toFixed(2)} (Entry: $${position.entryPrice.toFixed(2)})\n• Reason: \`${reason}\`\n• Trade PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} USDC\n• Daily PnL: $${dailyPnL.toFixed(2)} USDC`);
 
     position = null;
   } catch (e) {
