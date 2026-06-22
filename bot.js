@@ -32,7 +32,7 @@ const CONFIG = {
   volPeriod:    20,                // volume SMA period
   pollMs:       15000,             // poll every 15 seconds for fast stop-loss
   signalPollMs: 60000,             // check for signals every 60 seconds
-  stopPollMs:   60000,             // monitor stops every 60 seconds when in position
+  stopPollMs:   1000,              // monitor stops every 1 second when in position
   testnet:      false,              // true = testnet, false = mainnet
   maxDailyLoss: -500,             // kill switch: max daily loss USD
 };
