@@ -23,8 +23,8 @@ const CONFIG = {
   useAtrStop:   true,
   atrPeriod:    14,
   atrMult:      3,                 // ATR stop-loss multiplier (wide stops, ×3)
-  useTrailing:  false,             // trailing stops OFF (hurt 15m performance)
-  trailMult:    3.0,               // trailing stop ATR multiplier (unused)
+  useTrailing:  true,              // trailing stops ON
+  trailMult:    3.0,               // trailing stop ATR multiplier (3.0)
   longOnly:     false,             // long + short mode
   useTrend:     true,              // trend filter ON
   trendPeriod:  100,               // trend MA period (optimized)
