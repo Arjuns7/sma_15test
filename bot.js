@@ -252,6 +252,45 @@ async function runBot() {
 async function monitorStops() {
   if (!position) return;
 
+  // Check if position was closed externally or on-chain (every 10s)
+  if (!position.lastPositionCheck || Date.now() - position.lastPositionCheck > 10000) {
+    position.lastPositionCheck = Date.now();
+    try {
+      const positions = await exchange.fetchPositions([CONFIG.symbol]);
+      const pos = positions.find(p =>
+        p.symbol === CONFIG.symbol && Math.abs(p.contracts) > 0
+      );
+      if (!pos) {
+        console.log(`\n[${new Date().toLocaleTimeString()}] 🔊 Position was closed externally or on-chain (e.g. stop-loss hit). Updating state...`);
+        let exitPrice = 0;
+        let pnl = 0;
+        try {
+          const trades = await exchange.fetchMyTrades(CONFIG.symbol, undefined, 5);
+          if (trades && trades.length > 0) {
+            const lastTrade = trades[trades.length - 1];
+            exitPrice = lastTrade.price;
+            pnl = position.side === 'LONG'
+              ? (exitPrice - position.entryPrice) * position.size
+              : (position.entryPrice - exitPrice) * position.size;
+          }
+        } catch (tradeErr) {
+          // If we couldn't fetch trades, fallback to last known ticker price
+          const ticker = await exchange.fetchTicker(CONFIG.symbol);
+          exitPrice = ticker.last;
+          pnl = position.side === 'LONG'
+            ? (exitPrice - position.entryPrice) * position.size
+            : (position.entryPrice - exitPrice) * position.size;
+        }
+        dailyPnL += pnl;
+        sendDiscordNotification(`🔴 **[SMABot] CLOSED ${position.side}**\n• Exit Price: $${exitPrice.toFixed(2)} (Entry: $${position.entryPrice.toFixed(2)})\n• Reason: \`on-chain stop-loss / external\`\n• Trade PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} USDC\n• Daily PnL: $${dailyPnL.toFixed(2)} USDC`);
+        position = null;
+        return;
+      }
+    } catch (posErr) {
+      console.log(`⚠️ Could not check position sync: ${posErr.message}`);
+    }
+  }
+
   try {
     const ticker = await exchange.fetchTicker(CONFIG.symbol);
     const price = ticker.last;
