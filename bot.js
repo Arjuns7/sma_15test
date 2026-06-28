@@ -14,7 +14,7 @@ const CONFIG = {
   timeframe:    '15m',              // candle interval — optimized for 15m
   fastPeriod:   20,                 // fast SMA period (optimized)
   slowPeriod:   100,                // slow SMA period (optimized)
-  leverage:     1,                  // position leverage
+  leverage:     2,                  // position leverage
   riskPct:      0.02,              // risk 2% of balance per trade
   useRsi:       true,
   rsiPeriod:    14,
