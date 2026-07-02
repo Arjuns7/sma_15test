@@ -10,31 +10,31 @@ const ccxt = require('ccxt');
 
 // ─── CONFIG ──────────────────────────────────────────────────
 const CONFIG = {
-  symbol:       'BTC/USDC:USDC',   // Hyperliquid perp format
-  timeframe:    '15m',              // candle interval — optimized for 15m
-  fastPeriod:   20,                 // fast SMA period (optimized)
-  slowPeriod:   100,                // slow SMA period (optimized)
-  leverage:     2,                  // position leverage
-  riskPct:      0.02,              // risk 2% of balance per trade
-  useRsi:       true,
-  rsiPeriod:    14,
-  rsiOB:        65,                // skip longs above this RSI
-  rsiOS:        35,                // skip shorts below this RSI
-  useAtrStop:   true,
-  atrPeriod:    14,
-  atrMult:      3,                 // ATR stop-loss multiplier (wide stops, ×3)
-  useTrailing:  true,              // trailing stops ON
-  trailMult:    3.0,               // trailing stop ATR multiplier (3.0)
-  longOnly:     false,             // long + short mode
-  useTrend:     true,              // trend filter ON
-  trendPeriod:  100,               // trend MA period (optimized)
-  useVol:       false,             // volume filter OFF
-  volPeriod:    20,                // volume SMA period
-  pollMs:       15000,             // poll every 15 seconds for fast stop-loss
-  signalPollMs: 5000,              // check for signals every 5 seconds
-  stopPollMs:   1000,              // monitor stops every 1 second when in position
-  testnet:      false,              // true = testnet, false = mainnet
-  maxDailyLoss: -500,             // kill switch: max daily loss USD
+  symbol:          'BTC/USDC:USDC',  // Hyperliquid perp format
+  timeframe:       '15m',             // candle interval
+  fastPeriod:      20,                // fast EMA period
+  slowPeriod:      100,               // slow EMA period
+  leverage:        2,                 // position leverage
+  useRsi:          true,
+  rsiPeriod:       14,
+  rsiOB:           65,               // skip longs above this RSI
+  rsiOS:           35,               // skip shorts below this RSI
+  useAtrStop:      true,
+  atrPeriod:       14,
+  atrMult:         3,                // ATR stop-loss multiplier
+  useTrailing:     true,             // trailing stop ON
+  trailMult:       3.0,              // trailing stop ATR multiplier
+  useTakeProfit:   true,             // take-profit ON  ← NEW
+  tpPoints:        1500,             // close when +$1500 from entry  ← NEW
+  longOnly:        false,            // long + short mode
+  useTrend:        true,             // trend filter ON
+  trendPeriod:     100,              // trend MA period
+  useVol:          false,            // volume filter OFF
+  volPeriod:       20,               // volume SMA period
+  signalPollMs:    60000,            // check signals every 60s (15m candles need ≤ 60s) ← FIXED (was 5s)
+  stopPollMs:      1000,             // monitor stops every 1s when in position
+  testnet:         false,            // true = testnet, false = mainnet
+  maxDailyLoss:    -500,            // kill switch: max daily loss USD
 };
 
 // ─── EXCHANGE SETUP ──────────────────────────────────────────
@@ -141,6 +141,10 @@ let position = null;
 let dailyPnL = 0;
 let lastResetDay = new Date().toDateString();
 let tradeCount = 0;
+// Tracks the candle timestamp of the last crossover we ACTED on.
+// Prevents re-entering a trade when the same crossover is still active
+// after a stop-loss or trailing-stop closes the position mid-candle.
+let lastActedCandleTime = 0;
 
 // ─── MAIN LOOP ───────────────────────────────────────────────
 async function runBot() {
@@ -328,6 +332,20 @@ async function monitorStops() {
       }
     }
 
+    // Take-Profit check  ← NEW
+    if (CONFIG.useTakeProfit) {
+      if (position.side === 'LONG' && price >= position.entryPrice + CONFIG.tpPoints) {
+        console.log(`[${ts}] 🟢 TAKE-PROFIT HIT! Price: $${price} >= TP: $${(position.entryPrice + CONFIG.tpPoints).toFixed(0)}`);
+        await closePosition('take-profit');
+        return;
+      }
+      if (position.side === 'SHORT' && price <= position.entryPrice - CONFIG.tpPoints) {
+        console.log(`[${ts}] 🟢 TAKE-PROFIT HIT! Price: $${price} <= TP: $${(position.entryPrice - CONFIG.tpPoints).toFixed(0)}`);
+        await closePosition('take-profit');
+        return;
+      }
+    }
+
     // Trailing Stop check
     if (CONFIG.useTrailing) {
       const tsDist = CONFIG.trailMult * atrNow;
@@ -438,7 +456,7 @@ async function tick() {
     (death ? ' 🔴 DEATH CROSS' : '')
   );
 
-  // ── STOP-LOSS & TRAILING STOP CHECK ──
+  // ── STOP-LOSS, TAKE-PROFIT & TRAILING STOP CHECK (in tick) ──
   if (position && atrNow) {
     if (CONFIG.useAtrStop) {
       const stopDist = CONFIG.atrMult * atrNow;
@@ -450,6 +468,19 @@ async function tick() {
       if (position.side === 'SHORT' && price > position.entryPrice + stopDist) {
         console.log('🔴 ATR Stop-Loss hit!');
         await closePosition('atr-stop');
+        return;
+      }
+    }
+    // Take-Profit check in tick  ← NEW
+    if (CONFIG.useTakeProfit) {
+      if (position.side === 'LONG' && price >= position.entryPrice + CONFIG.tpPoints) {
+        console.log(`🟢 Take-Profit hit! $${price} >= $${(position.entryPrice + CONFIG.tpPoints).toFixed(0)}`);
+        await closePosition('take-profit');
+        return;
+      }
+      if (position.side === 'SHORT' && price <= position.entryPrice - CONFIG.tpPoints) {
+        console.log(`🟢 Take-Profit hit! $${price} <= $${(position.entryPrice - CONFIG.tpPoints).toFixed(0)}`);
+        await closePosition('take-profit');
         return;
       }
     }
@@ -474,28 +505,61 @@ async function tick() {
     }
   }
 
+  // Current candle's open timestamp — used to de-duplicate signals
+  const candleTime = candles[i][0];
+
   // ── SIGNAL LOGIC ──
+  // BUG FIX: Only act on a crossover ONCE per candle.
+  // Without this, when a stop closes the position mid-candle the same
+  // crossover signal is still true and would immediately re-open a trade.
   if (golden) {
     if (position?.side === 'SHORT') {
+      // Closing opposite side on crossover — always allowed
       await closePosition('crossover');
-    }
-    const rsiBlocked = CONFIG.useRsi && rsiNow !== null && rsiNow > CONFIG.rsiOB;
-    const trendBlocked = CONFIG.useTrend && trendNow !== null && price <= trendNow;
-    const volBlocked = CONFIG.useVol && volSMANow !== null && volNow <= volSMANow;
-    if (!position && !rsiBlocked && !trendBlocked && !volBlocked) {
-      await openPosition('LONG', price);
+      lastActedCandleTime = candleTime; // mark this candle as acted
+      // Re-fetch price after close so new LONG entry uses current market price
+      const freshTicker = await exchange.fetchTicker(CONFIG.symbol);
+      const freshPrice = freshTicker.last;
+      const rsiBlocked = CONFIG.useRsi && rsiNow !== null && rsiNow > CONFIG.rsiOB;
+      const trendBlocked = CONFIG.useTrend && trendNow !== null && freshPrice <= trendNow;
+      const volBlocked = CONFIG.useVol && volSMANow !== null && volNow <= volSMANow;
+      if (!position && !rsiBlocked && !trendBlocked && !volBlocked) {
+        await openPosition('LONG', freshPrice);
+      }
+    } else if (!position && candleTime !== lastActedCandleTime) {
+      // Fresh entry from flat — only if we haven't already acted on this candle
+      const rsiBlocked = CONFIG.useRsi && rsiNow !== null && rsiNow > CONFIG.rsiOB;
+      const trendBlocked = CONFIG.useTrend && trendNow !== null && price <= trendNow;
+      const volBlocked = CONFIG.useVol && volSMANow !== null && volNow <= volSMANow;
+      if (!rsiBlocked && !trendBlocked && !volBlocked) {
+        lastActedCandleTime = candleTime;
+        await openPosition('LONG', price);
+      }
     }
   }
 
   if (death) {
     if (position?.side === 'LONG') {
+      // Closing opposite side on crossover — always allowed
       await closePosition('crossover');
-    }
-    if (!CONFIG.longOnly) {
+      lastActedCandleTime = candleTime;
+      if (!CONFIG.longOnly) {
+        const freshTicker = await exchange.fetchTicker(CONFIG.symbol);
+        const freshPrice = freshTicker.last;
+        const rsiBlocked = CONFIG.useRsi && rsiNow !== null && rsiNow < CONFIG.rsiOS;
+        const trendBlocked = CONFIG.useTrend && trendNow !== null && freshPrice >= trendNow;
+        const volBlocked = CONFIG.useVol && volSMANow !== null && volNow <= volSMANow;
+        if (!position && !rsiBlocked && !trendBlocked && !volBlocked) {
+          await openPosition('SHORT', freshPrice);
+        }
+      }
+    } else if (!position && !CONFIG.longOnly && candleTime !== lastActedCandleTime) {
+      // Fresh entry from flat — only if we haven't already acted on this candle
       const rsiBlocked = CONFIG.useRsi && rsiNow !== null && rsiNow < CONFIG.rsiOS;
       const trendBlocked = CONFIG.useTrend && trendNow !== null && price >= trendNow;
       const volBlocked = CONFIG.useVol && volSMANow !== null && volNow <= volSMANow;
-      if (!position && !rsiBlocked && !trendBlocked && !volBlocked) {
+      if (!rsiBlocked && !trendBlocked && !volBlocked) {
+        lastActedCandleTime = candleTime;
         await openPosition('SHORT', price);
       }
     }
@@ -505,9 +569,19 @@ async function tick() {
 // ─── ORDER EXECUTION ─────────────────────────────────────────
 async function openPosition(side, price) {
   try {
+    // Cancel any lingering on-chain stop from a previous position  ← NEW
+    if (position?.stopOrderId) {
+      try {
+        await exchange.cancelOrder(position.stopOrderId, CONFIG.symbol);
+        console.log(`🗑️  Cancelled old stop order: ${position.stopOrderId}`);
+      } catch (cancelErr) {
+        // Order may already be filled or cancelled — safe to ignore
+      }
+    }
+
     const balance = await exchange.fetchBalance();
     const free = parseFloat(balance.free?.USDC || balance.total?.USDC || 0);
-    const positionValue = free * CONFIG.leverage;  // full capital × leverage (matches backtester)
+    const positionValue = free * CONFIG.leverage;  // full capital × leverage
     const size = positionValue / price;
 
     console.log(`\n🟢 OPENING ${side}`);
