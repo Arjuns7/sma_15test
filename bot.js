@@ -23,7 +23,7 @@ const CONFIG = {
   atrPeriod:       14,
   atrMult:         3,                // ATR stop-loss multiplier
   useTrailing:     true,             // trailing stop ON
-  trailMult:       3.0,              // trailing stop ATR multiplier
+  trailMult:       2.0,              // trailing stop ATR multiplier — tighter = more profit captured
   useTakeProfit:   true,             // take-profit ON  ← NEW
   tpPoints:        1500,             // close when +$1500 from entry  ← NEW
   longOnly:        false,            // long + short mode
