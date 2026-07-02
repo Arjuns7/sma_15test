@@ -26,6 +26,9 @@ const CONFIG = {
   trailMult:       2.0,              // trailing stop ATR multiplier — tighter = more profit captured
   useTakeProfit:   true,             // take-profit ON  ← NEW
   tpPoints:        1500,             // close when +$1500 from entry  ← NEW
+  useAdx:          true,             // ADX trend-strength filter — skips trades in choppy markets
+  adxPeriod:       14,               // ADX period (standard = 14)
+  adxThreshold:    25,               // minimum ADX to allow entry (< 25 = choppy, skip)
   longOnly:        false,            // long + short mode
   useTrend:        true,             // trend filter ON
   trendPeriod:     100,              // trend MA period
@@ -117,6 +120,55 @@ function calcSMA(values, period) {
   for (let i = period; i < values.length; i++) {
     sum += values[i] - values[i - period];
     out[i] = sum / period;
+  }
+  return out;
+}
+
+// ADX — Average Directional Index (measures trend STRENGTH, not direction)
+// ADX < 20: sideways/choppy → skip entry
+// ADX > 25: trending market → allow entry
+function calcADX(candles, period = 14) {
+  const out = new Array(candles.length).fill(null);
+  if (candles.length < period * 2 + 1) return out;
+
+  const plusDM  = [];
+  const minusDM = [];
+  const trs     = [];
+
+  for (let i = 1; i < candles.length; i++) {
+    const high  = candles[i][2],  low  = candles[i][3];
+    const phigh = candles[i-1][2], plow = candles[i-1][3], pclose = candles[i-1][4];
+    const upMove   = high  - phigh;
+    const downMove = plow  - low;
+    plusDM .push(upMove   > downMove && upMove   > 0 ? upMove   : 0);
+    minusDM.push(downMove > upMove   && downMove > 0 ? downMove : 0);
+    trs.push(Math.max(high - low, Math.abs(high - pclose), Math.abs(low - pclose)));
+  }
+
+  // Wilder's smoothing
+  let smoothTR = trs.slice(0, period).reduce((a, b) => a + b, 0);
+  let smoothPDM = plusDM.slice(0, period).reduce((a, b) => a + b, 0);
+  let smoothMDM = minusDM.slice(0, period).reduce((a, b) => a + b, 0);
+
+  const dxArr = [];
+  for (let i = period; i < trs.length; i++) {
+    smoothTR  = smoothTR  - smoothTR  / period + trs[i];
+    smoothPDM = smoothPDM - smoothPDM / period + plusDM[i];
+    smoothMDM = smoothMDM - smoothMDM / period + minusDM[i];
+    const pdi = smoothTR === 0 ? 0 : 100 * smoothPDM / smoothTR;
+    const mdi = smoothTR === 0 ? 0 : 100 * smoothMDM / smoothTR;
+    const dx  = (pdi + mdi) === 0 ? 0 : 100 * Math.abs(pdi - mdi) / (pdi + mdi);
+    dxArr.push(dx);
+  }
+
+  // ADX = Wilder-smoothed DX
+  if (dxArr.length < period) return out;
+  let adx = dxArr.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  const startIdx = period * 2; // offset back to candle array index
+  out[startIdx] = adx;
+  for (let j = 1; j < dxArr.length - period + 1; j++) {
+    adx = (adx * (period - 1) + dxArr[period - 1 + j]) / period;
+    out[startIdx + j] = adx;
   }
   return out;
 }
@@ -407,7 +459,7 @@ async function tick() {
   }
 
   // Fetch candles (OHLCV format: [timestamp, open, high, low, close, volume])
-  const needed = Math.max(CONFIG.slowPeriod, CONFIG.rsiPeriod, CONFIG.atrPeriod, CONFIG.useTrend ? CONFIG.trendPeriod : 0, CONFIG.useVol ? CONFIG.volPeriod : 0) + 5;
+  const needed = Math.max(CONFIG.slowPeriod, CONFIG.rsiPeriod, CONFIG.atrPeriod, CONFIG.useTrend ? CONFIG.trendPeriod : 0, CONFIG.useVol ? CONFIG.volPeriod : 0, CONFIG.useAdx ? CONFIG.adxPeriod * 2 + 5 : 0) + 5;
   const candles = await exchange.fetchOHLCV(
     CONFIG.symbol, CONFIG.timeframe, undefined, needed
   );
@@ -425,7 +477,8 @@ async function tick() {
     ? calcATR(candles, CONFIG.atrPeriod) : null;
   const trendMA = CONFIG.useTrend ? calcEMA(closes, CONFIG.trendPeriod) : null;
   const volumes = candles.map(c => c[5]);
-  const volSMA = CONFIG.useVol ? calcSMA(volumes, CONFIG.volPeriod) : null;
+  const volSMA  = CONFIG.useVol  ? calcSMA(volumes, CONFIG.volPeriod)  : null;
+  const adxVals = CONFIG.useAdx  ? calcADX(candles, CONFIG.adxPeriod) : null;
 
   const i = closes.length - 1;
   const prevI = i - 1;
@@ -438,22 +491,26 @@ async function tick() {
   const rsiNow = rsiVals ? rsiVals[i] : null;
   const atrNow = atrVals ? atrVals[i] : null;
   const trendNow = trendMA ? trendMA[i] : null;
-  const volNow = candles[i] ? candles[i][5] : null;
-  const volSMANow = volSMA ? volSMA[i] : null;
+  const volNow    = candles[i] ? candles[i][5] : null;
+  const volSMANow = volSMA  ? volSMA[i]  : null;
+  const adxNow    = adxVals ? adxVals[i] : null;
   const golden = pf <= ps && cf > cs;  // bullish crossover
   const death  = pf >= ps && cf < cs;  // bearish crossover
+  // ADX check — is the market trending strongly enough to enter?
+  const adxBlocked = CONFIG.useAdx && adxNow !== null && adxNow < CONFIG.adxThreshold;
 
   const ts = new Date().toLocaleTimeString();
   const posInfo = position ? ` | Pos: ${position.side}` : '';
   console.log(
     `[${ts}] $${price.toFixed(2)} | Fast: ${cf.toFixed(2)} | Slow: ${cs.toFixed(2)}` +
-    `${rsiNow ? ` | RSI: ${rsiNow.toFixed(1)}` : ''}` +
-    `${atrNow ? ` | ATR: ${atrNow.toFixed(2)}` : ''}` +
-    `${trendNow ? ` | Trend: ${price > trendNow ? '↑' : '↓'}` : ''}` +
+    `${rsiNow    ? ` | RSI: ${rsiNow.toFixed(1)}`              : ''}` +
+    `${atrNow    ? ` | ATR: ${atrNow.toFixed(2)}`              : ''}` +
+    `${adxNow    ? ` | ADX: ${adxNow.toFixed(1)}${adxBlocked ? ' ⚠️CHOP' : ' ✅TREND'}` : ''}` +
+    `${trendNow  ? ` | Trend: ${price > trendNow ? '↑' : '↓'}` : ''}` +
     `${volSMANow ? ` | Vol: ${volNow > volSMANow ? '↑' : '↓'}` : ''}` +
     posInfo +
     (golden ? ' 🟢 GOLDEN CROSS' : '') +
-    (death ? ' 🔴 DEATH CROSS' : '')
+    (death  ? ' 🔴 DEATH CROSS'  : '')
   );
 
   // ── STOP-LOSS, TAKE-PROFIT & TRAILING STOP CHECK (in tick) ──
@@ -520,18 +577,22 @@ async function tick() {
       // Re-fetch price after close so new LONG entry uses current market price
       const freshTicker = await exchange.fetchTicker(CONFIG.symbol);
       const freshPrice = freshTicker.last;
-      const rsiBlocked = CONFIG.useRsi && rsiNow !== null && rsiNow > CONFIG.rsiOB;
-      const trendBlocked = CONFIG.useTrend && trendNow !== null && freshPrice <= trendNow;
-      const volBlocked = CONFIG.useVol && volSMANow !== null && volNow <= volSMANow;
-      if (!position && !rsiBlocked && !trendBlocked && !volBlocked) {
+      const rsiBlocked   = CONFIG.useRsi   && rsiNow !== null   && rsiNow   > CONFIG.rsiOB;
+      const trendBlocked = CONFIG.useTrend && trendNow !== null  && freshPrice <= trendNow;
+      const volBlocked   = CONFIG.useVol   && volSMANow !== null && volNow   <= volSMANow;
+      // ADX: allow flip-entries even in chop (crossover already closed the short)
+      // but log a warning so you can track it
+      if (adxBlocked) console.log(`[ADX] ${adxNow?.toFixed(1)} < ${CONFIG.adxThreshold} — CHOP detected, skipping LONG entry`);
+      if (!position && !rsiBlocked && !trendBlocked && !volBlocked && !adxBlocked) {
         await openPosition('LONG', freshPrice);
       }
     } else if (!position && candleTime !== lastActedCandleTime) {
       // Fresh entry from flat — only if we haven't already acted on this candle
-      const rsiBlocked = CONFIG.useRsi && rsiNow !== null && rsiNow > CONFIG.rsiOB;
-      const trendBlocked = CONFIG.useTrend && trendNow !== null && price <= trendNow;
-      const volBlocked = CONFIG.useVol && volSMANow !== null && volNow <= volSMANow;
-      if (!rsiBlocked && !trendBlocked && !volBlocked) {
+      const rsiBlocked   = CONFIG.useRsi   && rsiNow !== null   && rsiNow   > CONFIG.rsiOB;
+      const trendBlocked = CONFIG.useTrend && trendNow !== null  && price    <= trendNow;
+      const volBlocked   = CONFIG.useVol   && volSMANow !== null && volNow   <= volSMANow;
+      if (adxBlocked) console.log(`[ADX] ${adxNow?.toFixed(1)} < ${CONFIG.adxThreshold} — CHOP detected, skipping LONG entry`);
+      if (!rsiBlocked && !trendBlocked && !volBlocked && !adxBlocked) {
         lastActedCandleTime = candleTime;
         await openPosition('LONG', price);
       }
@@ -546,19 +607,21 @@ async function tick() {
       if (!CONFIG.longOnly) {
         const freshTicker = await exchange.fetchTicker(CONFIG.symbol);
         const freshPrice = freshTicker.last;
-        const rsiBlocked = CONFIG.useRsi && rsiNow !== null && rsiNow < CONFIG.rsiOS;
-        const trendBlocked = CONFIG.useTrend && trendNow !== null && freshPrice >= trendNow;
-        const volBlocked = CONFIG.useVol && volSMANow !== null && volNow <= volSMANow;
-        if (!position && !rsiBlocked && !trendBlocked && !volBlocked) {
+        const rsiBlocked   = CONFIG.useRsi   && rsiNow !== null   && rsiNow   < CONFIG.rsiOS;
+        const trendBlocked = CONFIG.useTrend && trendNow !== null  && freshPrice >= trendNow;
+        const volBlocked   = CONFIG.useVol   && volSMANow !== null && volNow   <= volSMANow;
+        if (adxBlocked) console.log(`[ADX] ${adxNow?.toFixed(1)} < ${CONFIG.adxThreshold} — CHOP detected, skipping SHORT entry`);
+        if (!position && !rsiBlocked && !trendBlocked && !volBlocked && !adxBlocked) {
           await openPosition('SHORT', freshPrice);
         }
       }
     } else if (!position && !CONFIG.longOnly && candleTime !== lastActedCandleTime) {
       // Fresh entry from flat — only if we haven't already acted on this candle
-      const rsiBlocked = CONFIG.useRsi && rsiNow !== null && rsiNow < CONFIG.rsiOS;
-      const trendBlocked = CONFIG.useTrend && trendNow !== null && price >= trendNow;
-      const volBlocked = CONFIG.useVol && volSMANow !== null && volNow <= volSMANow;
-      if (!rsiBlocked && !trendBlocked && !volBlocked) {
+      const rsiBlocked   = CONFIG.useRsi   && rsiNow !== null   && rsiNow   < CONFIG.rsiOS;
+      const trendBlocked = CONFIG.useTrend && trendNow !== null  && price    >= trendNow;
+      const volBlocked   = CONFIG.useVol   && volSMANow !== null && volNow   <= volSMANow;
+      if (adxBlocked) console.log(`[ADX] ${adxNow?.toFixed(1)} < ${CONFIG.adxThreshold} — CHOP detected, skipping SHORT entry`);
+      if (!rsiBlocked && !trendBlocked && !volBlocked && !adxBlocked) {
         lastActedCandleTime = candleTime;
         await openPosition('SHORT', price);
       }
