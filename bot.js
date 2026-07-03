@@ -210,11 +210,14 @@ async function runBot() {
   console.log(`   Symbol:    ${CONFIG.symbol}`);
   console.log(`   Timeframe: ${CONFIG.timeframe}`);
   console.log(`   Strategy:  EMA ${CONFIG.fastPeriod}/${CONFIG.slowPeriod}`);
-  console.log(`   Leverage:  ${CONFIG.leverage}x`);
+  console.log(`   Leverage:  ${CONFIG.leverage}x (100% of balance)`);
   console.log(`   Mode:      ${CONFIG.longOnly ? 'Long Only' : 'Long + Short'}`);
-  console.log(`   Risk:      ${CONFIG.riskPct * 100}% per trade`);
   console.log(`   Trend:     ${CONFIG.useTrend ? `EMA ${CONFIG.trendPeriod}` : 'OFF'}`);
+  console.log(`   ADX:       ${CONFIG.useAdx ? `ON (min ${CONFIG.adxThreshold})` : 'OFF'}`);
+  console.log(`   Take-Prof: ${CONFIG.useTakeProfit ? `+$${CONFIG.tpPoints} pts` : 'OFF'}`);
   console.log(`   Volume:    ${CONFIG.useVol ? `SMA ${CONFIG.volPeriod}` : 'OFF'}`);
+  console.log(`   ATR Stop:  ${CONFIG.useAtrStop ? `${CONFIG.atrMult}x ATR` : 'OFF'}`);
+  console.log(`   Trailing:  ${CONFIG.useTrailing ? `${CONFIG.trailMult}x ATR` : 'OFF'}`);
   console.log('');
 
   // Load markets
