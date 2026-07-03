@@ -28,7 +28,7 @@ const CONFIG = {
   tpPoints:        1500,             // close when +$1500 from entry  ← NEW
   useAdx:          true,             // ADX trend-strength filter — skips trades in choppy markets
   adxPeriod:       14,               // ADX period (standard = 14)
-  adxThreshold:    25,               // minimum ADX to allow entry (< 25 = choppy, skip)
+  adxThreshold:    20,               // minimum ADX to allow entry (< 20 = choppy, skip) — lowered from 25
   longOnly:        false,            // long + short mode
   useTrend:        true,             // trend filter ON
   trendPeriod:     100,              // trend MA period
@@ -565,7 +565,16 @@ async function tick() {
   // Current candle's open timestamp — used to de-duplicate signals
   const candleTime = candles[i][0];
 
-  // ── SIGNAL LOGIC ──
+  // Summary log — shows exactly why no trade is taken
+  if (!position && (golden || death)) {
+    const rsiB   = CONFIG.useRsi   && rsiNow   !== null && (golden ? rsiNow > CONFIG.rsiOB : rsiNow < CONFIG.rsiOS);
+    const trendB = CONFIG.useTrend && trendNow !== null && (golden ? price <= trendNow : price >= trendNow);
+    const adxB   = adxBlocked;
+    const sameC  = candles[i][0] === lastActedCandleTime;
+    if (rsiB || trendB || adxB || sameC) {
+      console.log(`   ⛔ Entry blocked: ${adxB ? `ADX=${adxNow?.toFixed(1)}<${CONFIG.adxThreshold}(CHOP) ` : ''}${rsiB ? 'RSI ' : ''}${trendB ? 'TREND ' : ''}${sameC ? 'SAME-CANDLE' : ''}`);
+    }
+  }
   // BUG FIX: Only act on a crossover ONCE per candle.
   // Without this, when a stop closes the position mid-candle the same
   // crossover signal is still true and would immediately re-open a trade.
