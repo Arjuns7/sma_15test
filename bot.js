@@ -7,6 +7,26 @@
 
 require('dotenv').config();
 const ccxt = require('ccxt');
+const fs   = require('fs');
+const path = require('path');
+
+const STATE_FILE = path.join(__dirname, 'state.json');
+
+function loadState() {
+  try {
+    if (fs.existsSync(STATE_FILE)) {
+      const s = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+      console.log('📂 State restored from disk: lastActedCandleTime =', s.lastActedCandleTime);
+      return s;
+    }
+  } catch (e) { console.log('⚠️ Could not read state file:', e.message); }
+  return { lastActedCandleTime: 0 };
+}
+
+function saveState(obj) {
+  try { fs.writeFileSync(STATE_FILE, JSON.stringify(obj, null, 2)); }
+  catch (e) { console.log('⚠️ Could not save state:', e.message); }
+}
 
 // ─── CONFIG ──────────────────────────────────────────────────
 const CONFIG = {
@@ -193,10 +213,16 @@ let position = null;
 let dailyPnL = 0;
 let lastResetDay = new Date().toDateString();
 let tradeCount = 0;
-// Tracks the candle timestamp of the last crossover we ACTED on.
-// Prevents re-entering a trade when the same crossover is still active
-// after a stop-loss or trailing-stop closes the position mid-candle.
-let lastActedCandleTime = 0;
+
+// Persisted across restarts via state.json
+// Prevents re-entry on same crossover signal after Railway restarts
+const _state = loadState();
+let lastActedCandleTime = _state.lastActedCandleTime || 0;
+
+function persistCandleTime(t) {
+  lastActedCandleTime = t;
+  saveState({ lastActedCandleTime: t });
+}
 
 // ─── MAIN LOOP ───────────────────────────────────────────────
 async function runBot() {
@@ -585,7 +611,7 @@ async function tick() {
     if (position?.side === 'SHORT') {
       // Closing opposite side on crossover — always allowed
       await closePosition('crossover');
-      lastActedCandleTime = candleTime; // mark this candle as acted
+      persistCandleTime(candleTime); // mark this candle as acted
       // Re-fetch price after close so new LONG entry uses current market price
       const freshTicker = await exchange.fetchTicker(CONFIG.symbol);
       const freshPrice = freshTicker.last;
@@ -605,7 +631,7 @@ async function tick() {
       const volBlocked   = CONFIG.useVol   && volSMANow !== null && volNow   <= volSMANow;
       if (adxBlocked) console.log(`[ADX] ${adxNow?.toFixed(1)} < ${CONFIG.adxThreshold} — CHOP detected, skipping LONG entry`);
       if (!rsiBlocked && !trendBlocked && !volBlocked && !adxBlocked) {
-        lastActedCandleTime = candleTime;
+        persistCandleTime(candleTime);
         await openPosition('LONG', price);
       }
     }
@@ -615,7 +641,7 @@ async function tick() {
     if (position?.side === 'LONG') {
       // Closing opposite side on crossover — always allowed
       await closePosition('crossover');
-      lastActedCandleTime = candleTime;
+      persistCandleTime(candleTime);
       if (!CONFIG.longOnly) {
         const freshTicker = await exchange.fetchTicker(CONFIG.symbol);
         const freshPrice = freshTicker.last;
@@ -634,7 +660,7 @@ async function tick() {
       const volBlocked   = CONFIG.useVol   && volSMANow !== null && volNow   <= volSMANow;
       if (adxBlocked) console.log(`[ADX] ${adxNow?.toFixed(1)} < ${CONFIG.adxThreshold} — CHOP detected, skipping SHORT entry`);
       if (!rsiBlocked && !trendBlocked && !volBlocked && !adxBlocked) {
-        lastActedCandleTime = candleTime;
+        persistCandleTime(candleTime);
         await openPosition('SHORT', price);
       }
     }
