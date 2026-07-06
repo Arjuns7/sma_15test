@@ -37,8 +37,8 @@ const CONFIG = {
   leverage:        2,                 // position leverage
   useRsi:          true,
   rsiPeriod:       14,
-  rsiOB:           80,               // skip longs above this RSI (raised from 65 — 65 was too tight in strong trends)
-  rsiOS:           20,               // skip shorts below this RSI (lowered from 35)
+  rsiOB:           65,               // skip longs above this RSI
+  rsiOS:           35,               // skip shorts below this RSI
   useAtrStop:      true,
   atrPeriod:       14,
   atrMult:         3,                // ATR stop-loss multiplier
